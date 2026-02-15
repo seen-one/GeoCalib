@@ -597,7 +597,10 @@
             const params = new URLSearchParams({
                 img: `/mem_image/${data.main_id}`,
                 pitch: data.pitch,
-                roll: data.roll
+                roll: data.roll,
+                sample_count: data.sample_count,
+                fov: data.fov_deg,
+                inlier_threshold_deg: data.inlier_threshold_deg
             });
             if (panoramaxPic) {
                 params.set('panoramax_pic', panoramaxPic);

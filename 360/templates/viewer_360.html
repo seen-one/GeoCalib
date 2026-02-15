@@ -146,6 +146,28 @@
         .source-link:hover {
             filter: brightness(0.95);
         }
+
+        .next-btn {
+            display: inline-block;
+            margin-top: 10px;
+            border: 0;
+            border-radius: 8px;
+            padding: 8px 10px;
+            font-weight: 700;
+            font-size: 0.86rem;
+            color: #fff;
+            background: #2a2a2a;
+            cursor: pointer;
+        }
+
+        .next-btn:hover:not(:disabled) {
+            background: #3b3b3b;
+        }
+
+        .next-btn:disabled {
+            opacity: 0.65;
+            cursor: wait;
+        }
     </style>
 </head>
 
@@ -171,6 +193,7 @@
             </div>
         </div>
 
+        <button id="nextSampleBtn" class="next-btn" type="button">Next Random Sample</button>
         <a id="panoramaxLink" class="source-link" href="#" target="_blank" rel="noopener noreferrer" style="display:none;">View on Panoramax</a>
     </div>
 
@@ -182,24 +205,25 @@
 
     <script>
         const urlParams = new URLSearchParams(window.location.search);
-        const imageSrc = urlParams.get('img');
-        const pitch = parseFloat(urlParams.get('pitch') || 0);
-        const roll = parseFloat(urlParams.get('roll') || 0);
-        const panoramaxPic = (urlParams.get('panoramax_pic') || '').trim().toLowerCase();
+        const settings = {
+            sample_count: parseInt(urlParams.get('sample_count') || '36', 10),
+            fov: parseFloat(urlParams.get('fov') || '60'),
+            inlier_threshold_deg: parseFloat(urlParams.get('inlier_threshold_deg') || '2')
+        };
+        let currentImageSrc = urlParams.get('img');
+        let currentPitch = parseFloat(urlParams.get('pitch') || 0);
+        let currentRoll = parseFloat(urlParams.get('roll') || 0);
+        let currentPanoramaxPic = (urlParams.get('panoramax_pic') || '').trim().toLowerCase();
+        let nextSamplePromise = null;
+        let cachedNextSample = null;
 
-        document.getElementById('p-val').textContent = pitch.toFixed(2) + '\u00B0';
-        document.getElementById('r-val').textContent = roll.toFixed(2) + '\u00B0';
-        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(panoramaxPic)) {
-            const panoramaxLink = document.getElementById('panoramaxLink');
-            panoramaxLink.href = `https://api.panoramax.xyz/#focus=pic&pic=${encodeURIComponent(panoramaxPic)}`;
-            panoramaxLink.style.display = 'inline-block';
-        }
-
-        let camera, scene, renderer, sphere, correctionGroup;
+        let camera, scene, renderer, sphere, correctionGroup, textureLoader;
         let isUserInteracting = false, lon = 0, lat = 0, phi = 0, theta = 0;
         let onPointerDownMouseX = 0, onPointerDownMouseY = 0, onPointerDownLon = 0, onPointerDownLat = 0;
 
         init();
+        updateStatsAndLink();
+        queueNextSamplePreload();
 
         function init() {
             const container = document.getElementById('container');
@@ -215,7 +239,8 @@
             const geometry = new THREE.SphereGeometry(500, 60, 40);
             geometry.scale(-1, 1, 1); // Invert to see from inside
 
-            const texture = new THREE.TextureLoader().load(imageSrc, function (tex) {
+            textureLoader = new THREE.TextureLoader();
+            const texture = textureLoader.load(currentImageSrc, function (tex) {
                 tex.colorSpace = THREE.SRGBColorSpace;
                 renderer.render(scene, camera);
             });
@@ -287,8 +312,21 @@
             renderer.render(scene, camera);
         }
 
-        document.getElementById('toggleCorrection').addEventListener('change', function (e) {
-            const isChecked = e.target.checked;
+        function updateStatsAndLink() {
+            document.getElementById('p-val').textContent = currentPitch.toFixed(2) + '\u00B0';
+            document.getElementById('r-val').textContent = currentRoll.toFixed(2) + '\u00B0';
+            const panoramaxLink = document.getElementById('panoramaxLink');
+            if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(currentPanoramaxPic)) {
+                panoramaxLink.href = `https://api.panoramax.xyz/#focus=pic&pic=${encodeURIComponent(currentPanoramaxPic)}`;
+                panoramaxLink.style.display = 'inline-block';
+            } else {
+                panoramaxLink.style.display = 'none';
+                panoramaxLink.href = '#';
+            }
+        }
+
+        function applyCorrection() {
+            const isChecked = document.getElementById('toggleCorrection').checked;
             const status = document.getElementById('mode-status');
             if (isChecked) {
                 status.textContent = "Leveled View";
@@ -297,13 +335,132 @@
                 // X-axis is Front-Back orientation in this Three.js setup -> Roll
                 // Z-axis is Right-Left orientation -> Pitch
                 // User reported Roll was still swapped
-                correctionGroup.rotation.x = THREE.MathUtils.degToRad(-roll);
-                correctionGroup.rotation.z = THREE.MathUtils.degToRad(pitch);
+                correctionGroup.rotation.x = THREE.MathUtils.degToRad(-currentRoll);
+                correctionGroup.rotation.z = THREE.MathUtils.degToRad(currentPitch);
             } else {
                 status.textContent = "Original View";
                 status.style.color = "#fff";
                 correctionGroup.rotation.x = 0;
                 correctionGroup.rotation.z = 0;
+            }
+        }
+
+        function loadTexture(url) {
+            return new Promise((resolve, reject) => {
+                textureLoader.load(
+                    url,
+                    (tex) => {
+                        tex.colorSpace = THREE.SRGBColorSpace;
+                        resolve(tex);
+                    },
+                    undefined,
+                    reject
+                );
+            });
+        }
+
+        async function applySample(sample) {
+            const newTexture = await loadTexture(sample.imageSrc);
+            const oldTexture = sphere.material.map;
+            sphere.material.map = newTexture;
+            sphere.material.needsUpdate = true;
+            if (oldTexture) oldTexture.dispose();
+
+            currentImageSrc = sample.imageSrc;
+            currentPitch = sample.pitch;
+            currentRoll = sample.roll;
+            currentPanoramaxPic = sample.panoramaxPic || '';
+            updateStatsAndLink();
+            applyCorrection();
+        }
+
+        async function fetchPredictedRandomSample() {
+            const idResponse = await fetch('/api/random_id');
+            const idData = await idResponse.json();
+            if (!idData.id) throw new Error(idData.error || 'Failed to get random Panoramax ID');
+
+            const picId = String(idData.id).toLowerCase();
+            const imageUrl = `https://api.panoramax.xyz/api/pictures/${picId}/hd.jpg`;
+            const formData = new FormData();
+            formData.append('url', imageUrl);
+            formData.append('sample_count', String(settings.sample_count));
+            formData.append('fov', String(settings.fov));
+            formData.append('inlier_threshold_deg', String(settings.inlier_threshold_deg));
+
+            const predictResponse = await fetch('/api/predict_360', {
+                method: 'POST',
+                body: formData
+            });
+            const predictData = await predictResponse.json();
+            if (predictData.status !== 'success') {
+                throw new Error(predictData.error || 'Failed to process random sample');
+            }
+
+            const sample = {
+                imageSrc: `/mem_image/${predictData.main_id}`,
+                pitch: Number(predictData.pitch || 0),
+                roll: Number(predictData.roll || 0),
+                panoramaxPic: picId
+            };
+            try {
+                await fetch(sample.imageSrc, { cache: 'force-cache' });
+            } catch (err) {
+                console.warn('Image prefetch failed, continuing with prepared sample.', err);
+            }
+            return sample;
+        }
+
+        function queueNextSamplePreload() {
+            if (cachedNextSample || nextSamplePromise) return;
+            nextSamplePromise = fetchPredictedRandomSample()
+                .then((sample) => {
+                    cachedNextSample = sample;
+                    return sample;
+                })
+                .catch((err) => {
+                    console.error(err);
+                    return null;
+                })
+                .finally(() => {
+                    nextSamplePromise = null;
+                });
+        }
+
+        async function consumeNextSample() {
+            if (cachedNextSample) {
+                const sample = cachedNextSample;
+                cachedNextSample = null;
+                return sample;
+            }
+            if (!nextSamplePromise) {
+                queueNextSamplePreload();
+            }
+            const sample = await nextSamplePromise;
+            if (!sample) throw new Error('Random sample preload failed');
+            cachedNextSample = null;
+            return sample;
+        }
+
+        document.getElementById('toggleCorrection').addEventListener('change', function () {
+            applyCorrection();
+        });
+
+        document.getElementById('nextSampleBtn').addEventListener('click', async function () {
+            const btn = this;
+            const originalLabel = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = 'Loading Next...';
+            try {
+                const sample = await consumeNextSample();
+                await applySample(sample);
+                queueNextSamplePreload();
+            } catch (err) {
+                console.error(err);
+                alert(err.message || 'Failed to load the next random sample');
+                queueNextSamplePreload();
+            } finally {
+                btn.disabled = false;
+                btn.textContent = originalLabel;
             }
         });
 
