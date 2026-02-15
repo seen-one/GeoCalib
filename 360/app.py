@@ -94,17 +94,40 @@ def numpy_rgb_to_tensor(image_rgb):
     return tensor.to(DEVICE)
 
 
-def estimate_roll_deg(sample_bgr):
-    sample_rgb = cv2.cvtColor(sample_bgr, cv2.COLOR_BGR2RGB)
-    img = numpy_rgb_to_tensor(sample_rgb)
+def _expand_or_fill(tensor, size, fill_value):
+    if tensor is None:
+        return np.full(size, fill_value, dtype=np.float32)
+
+    values = torch.rad2deg(tensor.detach().cpu()).reshape(-1).numpy().astype(np.float32)
+    if values.size == size:
+        return values
+    if values.size == 1:
+        return np.full(size, float(values[0]), dtype=np.float32)
+    logger.warning("Unexpected uncertainty shape %s for %d samples.", values.shape, size)
+    return np.full(size, fill_value, dtype=np.float32)
+
+
+def estimate_rp_batch(sample_bgr_images):
+    batch = torch.stack(
+        [numpy_rgb_to_tensor(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)) for img in sample_bgr_images], dim=0
+    )
 
     # Guard model inference for concurrent Flask requests.
     with MODEL_LOCK:
         with torch.no_grad():
-            result = MODEL.calibrate(img, camera_model="pinhole")
+            result = MODEL.calibrate(batch, camera_model="pinhole", shared_intrinsics=True)
 
-    roll_rad = result["gravity"].rp[..., 0].detach().cpu().reshape(-1)[0]
-    return float(torch.rad2deg(roll_rad).item())
+    rp_deg = torch.rad2deg(result["gravity"].rp.detach().cpu()).numpy().astype(np.float32)
+    predicted_rolls = rp_deg[:, 0]
+    predicted_pitches = rp_deg[:, 1]
+
+    # Clamp to avoid exploding weights on overconfident outliers.
+    roll_unc_deg = np.maximum(_expand_or_fill(result.get("roll_uncertainty"), len(sample_bgr_images), 3.0), 0.1)
+    pitch_unc_deg = np.maximum(
+        _expand_or_fill(result.get("pitch_uncertainty"), len(sample_bgr_images), 3.0), 0.1
+    )
+
+    return predicted_rolls, predicted_pitches, roll_unc_deg, pitch_unc_deg
 
 
 @app.route("/")
@@ -205,8 +228,8 @@ def api_predict_360():
                 idx, sample_img = future.result()
                 sample_images[idx] = sample_img
 
-        predicted_rolls = np.array(
-            [estimate_roll_deg(sample_img) for sample_img in sample_images], dtype=np.float32
+        predicted_rolls, predicted_pitches, roll_unc_deg, pitch_unc_deg = estimate_rp_batch(
+            sample_images
         )
         yaw_rads = np.deg2rad(sample_yaws)
         roll_rads = np.deg2rad(predicted_rolls)
@@ -220,29 +243,48 @@ def api_predict_360():
         def model_roll_deg(alpha_rad, beta_rad, yaw_rad_values):
             return np.rad2deg(np.arctan(np.tan(beta_rad) * np.cos(yaw_rad_values - alpha_rad)))
 
+        def model_pitch_deg(alpha_rad, beta_rad, yaw_rad_values):
+            return np.rad2deg(-np.arctan(np.tan(beta_rad) * np.sin(yaw_rad_values - alpha_rad)))
+
         def evaluate_hypothesis(alpha_rad, beta_rad):
-            modeled = model_roll_deg(alpha_rad, beta_rad, yaw_rads)
-            errors = np.array(
-                [angular_diff_deg(float(p), float(m)) for p, m in zip(predicted_rolls, modeled)],
+            modeled_rolls = model_roll_deg(alpha_rad, beta_rad, yaw_rads)
+            modeled_pitches = model_pitch_deg(alpha_rad, beta_rad, yaw_rads)
+            roll_errors = np.array(
+                [angular_diff_deg(float(p), float(m)) for p, m in zip(predicted_rolls, modeled_rolls)],
                 dtype=np.float32,
             )
-            inliers = errors <= inlier_threshold_deg
+            pitch_errors = np.array(
+                [angular_diff_deg(float(p), float(m)) for p, m in zip(predicted_pitches, modeled_pitches)],
+                dtype=np.float32,
+            )
+            combined_errors = np.sqrt((roll_errors**2 + pitch_errors**2) / 2.0)
+            weighted_sq_errors = 0.5 * (
+                (roll_errors / roll_unc_deg) ** 2 + (pitch_errors / pitch_unc_deg) ** 2
+            )
+            inliers = combined_errors <= inlier_threshold_deg
             inlier_count = int(np.sum(inliers))
-            mae = float(np.mean(errors[inliers])) if inlier_count > 0 else float("inf")
+            mae = float(np.mean(combined_errors[inliers])) if inlier_count > 0 else float("inf")
             rmse = (
-                float(np.sqrt(np.mean(np.square(errors[inliers]))))
+                float(np.sqrt(np.mean(np.square(combined_errors[inliers]))))
                 if inlier_count > 0
                 else float("inf")
+            )
+            weighted_mse = (
+                float(np.mean(weighted_sq_errors[inliers])) if inlier_count > 0 else float("inf")
             )
             return {
                 "alpha_rad": float(normalize_rad(alpha_rad)),
                 "beta_rad": float(beta_rad),
-                "modeled_rolls": modeled,
-                "errors": errors,
+                "modeled_rolls": modeled_rolls,
+                "modeled_pitches": modeled_pitches,
+                "roll_errors": roll_errors,
+                "pitch_errors": pitch_errors,
+                "errors": combined_errors,
                 "inliers": inliers,
                 "inlier_count": inlier_count,
                 "mae": mae,
                 "rmse": rmse,
+                "weighted_mse": weighted_mse,
             }
 
         best = None
@@ -276,6 +318,12 @@ def api_predict_360():
                         best = hypothesis
                     elif (
                         hypothesis["inlier_count"] == best["inlier_count"]
+                        and hypothesis["weighted_mse"] < best["weighted_mse"]
+                    ):
+                        best = hypothesis
+                    elif (
+                        hypothesis["inlier_count"] == best["inlier_count"]
+                        and np.isclose(hypothesis["weighted_mse"], best["weighted_mse"])
                         and hypothesis["mae"] < best["mae"]
                     ):
                         best = hypothesis
@@ -285,17 +333,32 @@ def api_predict_360():
 
         inlier_indices = np.where(best["inliers"])[0]
         if len(inlier_indices) >= 2:
+            inlier_roll_unc = roll_unc_deg[inlier_indices]
+            inlier_pitch_unc = pitch_unc_deg[inlier_indices]
 
             def objective(alpha_rad, beta_rad):
-                modeled = model_roll_deg(alpha_rad, beta_rad, yaw_rads[inlier_indices])
-                errors = np.array(
+                modeled_rolls = model_roll_deg(alpha_rad, beta_rad, yaw_rads[inlier_indices])
+                modeled_pitches = model_pitch_deg(alpha_rad, beta_rad, yaw_rads[inlier_indices])
+                roll_errors = np.array(
                     [
-                        angular_diff_deg(float(predicted_rolls[idx]), float(modeled[k]))
+                        angular_diff_deg(float(predicted_rolls[idx]), float(modeled_rolls[k]))
                         for k, idx in enumerate(inlier_indices)
                     ],
                     dtype=np.float32,
                 )
-                return float(np.mean(np.square(errors)))
+                pitch_errors = np.array(
+                    [
+                        angular_diff_deg(float(predicted_pitches[idx]), float(modeled_pitches[k]))
+                        for k, idx in enumerate(inlier_indices)
+                    ],
+                    dtype=np.float32,
+                )
+                return float(
+                    np.mean(
+                        0.5
+                        * ((roll_errors / inlier_roll_unc) ** 2 + (pitch_errors / inlier_pitch_unc) ** 2)
+                    )
+                )
 
             alpha_center = best["alpha_rad"]
             beta_center = best["beta_rad"]
@@ -337,6 +400,7 @@ def api_predict_360():
 
         sample_entries = []
         modeled_rolls = best["modeled_rolls"]
+        modeled_pitches = best["modeled_pitches"]
         for idx in range(sample_count):
             success, buffer = cv2.imencode(".jpg", sample_images[idx])
             if not success:
@@ -349,6 +413,10 @@ def api_predict_360():
                     "yaw_deg": float(sample_yaws[idx]),
                     "predicted_roll_deg": float(predicted_rolls[idx]),
                     "modeled_roll_deg": float(modeled_rolls[idx]),
+                    "predicted_pitch_deg": float(predicted_pitches[idx]),
+                    "modeled_pitch_deg": float(modeled_pitches[idx]),
+                    "roll_error_deg": float(best["roll_errors"][idx]),
+                    "pitch_error_deg": float(best["pitch_errors"][idx]),
                     "error_deg": float(best["errors"][idx]),
                     "inlier": bool(best["inliers"][idx]),
                     "image_id": sample_image_id,
