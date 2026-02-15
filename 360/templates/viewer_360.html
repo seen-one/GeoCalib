@@ -226,6 +226,11 @@
             <input type="checkbox" id="toggleCorrection" checked>
             <div class="toggle-switch"></div>
         </label>
+        <label class="toggle-container">
+            <span style="font-weight: 600;">Preloading</span>
+            <input type="checkbox" id="togglePreloading" checked>
+            <div class="toggle-switch"></div>
+        </label>
 
         <div class="stats">
             <div class="stat-item">
@@ -266,6 +271,7 @@
         let currentPanoramaxPic = (urlParams.get('panoramax_pic') || '').trim().toLowerCase();
         let nextSamplePromise = null;
         let cachedNextSample = null;
+        let preloadingEnabled = true;
         let passCount = 0;
         let failCount = 0;
         let isAdvancing = false;
@@ -464,9 +470,11 @@
         }
 
         function queueNextSamplePreload() {
+            if (!preloadingEnabled) return;
             if (cachedNextSample || nextSamplePromise) return;
             nextSamplePromise = fetchPredictedRandomSample()
                 .then((sample) => {
+                    if (!preloadingEnabled) return null;
                     cachedNextSample = sample;
                     return sample;
                 })
@@ -484,6 +492,9 @@
                 const sample = cachedNextSample;
                 cachedNextSample = null;
                 return sample;
+            }
+            if (!preloadingEnabled) {
+                return await fetchPredictedRandomSample();
             }
             if (!nextSamplePromise) {
                 queueNextSamplePreload();
@@ -538,6 +549,15 @@
             applyCorrection();
         });
 
+        document.getElementById('togglePreloading').addEventListener('change', function (e) {
+            preloadingEnabled = e.target.checked;
+            if (!preloadingEnabled) {
+                cachedNextSample = null;
+            } else {
+                queueNextSamplePreload();
+            }
+        });
+
         document.getElementById('nextSampleBtn').addEventListener('click', async function () {
             await goToNextSample(null);
         });
@@ -550,6 +570,7 @@
             await goToNextSample('fail');
         });
 
+        document.getElementById('togglePreloading').dispatchEvent(new Event('change'));
         updateReviewStats();
         document.getElementById('toggleCorrection').dispatchEvent(new Event('change'));
     </script>
