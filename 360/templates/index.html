@@ -583,12 +583,25 @@
             });
         }
 
+        function extractPanoramaxPictureId(imageUrl) {
+            if (!imageUrl) return null;
+            const pattern = /^https?:\/\/api\.panoramax\.xyz\/api\/pictures\/([0-9a-fA-F-]{36})(?:\/[^?#]*)?(?:[?#].*)?$/;
+            const match = imageUrl.trim().match(pattern);
+            return match ? match[1].toLowerCase() : null;
+        }
+
         function openPreviewTab(data) {
+            const hasSelectedFile = (document.getElementById('file').files || []).length > 0;
+            const sourceUrl = hasSelectedFile ? '' : (document.getElementById('url').value || '');
+            const panoramaxPic = extractPanoramaxPictureId(sourceUrl);
             const params = new URLSearchParams({
                 img: `/mem_image/${data.main_id}`,
                 pitch: data.pitch,
                 roll: data.roll
             });
+            if (panoramaxPic) {
+                params.set('panoramax_pic', panoramaxPic);
+            }
             window.open(`/viewer_360?${params.toString()}`, '_blank');
         }
 

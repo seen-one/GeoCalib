@@ -130,6 +130,22 @@
             border-radius: 20px;
             pointer-events: none;
         }
+
+        .source-link {
+            display: inline-block;
+            margin-top: 14px;
+            text-decoration: none;
+            color: #111;
+            background: #f2b411;
+            border-radius: 8px;
+            padding: 8px 10px;
+            font-weight: 700;
+            font-size: 0.86rem;
+        }
+
+        .source-link:hover {
+            filter: brightness(0.95);
+        }
     </style>
 </head>
 
@@ -154,6 +170,8 @@
                 <span class="stat-value" id="r-val">0.00&deg;</span>
             </div>
         </div>
+
+        <a id="panoramaxLink" class="source-link" href="#" target="_blank" rel="noopener noreferrer" style="display:none;">View on Panoramax</a>
     </div>
 
     <div class="help-text">
@@ -167,9 +185,15 @@
         const imageSrc = urlParams.get('img');
         const pitch = parseFloat(urlParams.get('pitch') || 0);
         const roll = parseFloat(urlParams.get('roll') || 0);
+        const panoramaxPic = (urlParams.get('panoramax_pic') || '').trim().toLowerCase();
 
         document.getElementById('p-val').textContent = pitch.toFixed(2) + '\u00B0';
         document.getElementById('r-val').textContent = roll.toFixed(2) + '\u00B0';
+        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(panoramaxPic)) {
+            const panoramaxLink = document.getElementById('panoramaxLink');
+            panoramaxLink.href = `https://api.panoramax.xyz/#focus=pic&pic=${encodeURIComponent(panoramaxPic)}`;
+            panoramaxLink.style.display = 'inline-block';
+        }
 
         let camera, scene, renderer, sphere, correctionGroup;
         let isUserInteracting = false, lon = 0, lat = 0, phi = 0, theta = 0;
