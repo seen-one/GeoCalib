@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 MODEL = GeoCalib().to(DEVICE)
+MODEL.eval()
 MODEL_LOCK = Lock()
 PANORAMAX_IDS_PATH = Path(__file__).resolve().parent / "random_panoramax_bike_ids.txt"
 MAX_SAMPLE_COUNT = 144
@@ -91,7 +92,7 @@ def numpy_rgb_to_tensor(image_rgb):
         image_rgb = np.clip(image_rgb, 0, 255).astype(np.uint8)
     image_rgb = np.ascontiguousarray(image_rgb)
     tensor = torch.from_numpy(image_rgb).permute(2, 0, 1).float().div(255.0)
-    return tensor.to(DEVICE)
+    return tensor
 
 
 def _expand_or_fill(tensor, size, fill_value):
@@ -107,26 +108,45 @@ def _expand_or_fill(tensor, size, fill_value):
     return np.full(size, fill_value, dtype=np.float32)
 
 
-def estimate_rp_batch(sample_bgr_images):
-    batch = torch.stack(
-        [numpy_rgb_to_tensor(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)) for img in sample_bgr_images], dim=0
-    )
+def estimate_rp_batch(sample_bgr_images, chunk_size=16):
+    predicted_roll_chunks = []
+    predicted_pitch_chunks = []
+    roll_unc_chunks = []
+    pitch_unc_chunks = []
+    use_amp = DEVICE.type == "cuda"
 
     # Guard model inference for concurrent Flask requests.
     with MODEL_LOCK:
         with torch.no_grad():
-            result = MODEL.calibrate(batch, camera_model="pinhole", shared_intrinsics=True)
+            for start in range(0, len(sample_bgr_images), chunk_size):
+                chunk_images = sample_bgr_images[start : start + chunk_size]
+                chunk_batch_cpu = torch.stack(
+                    [numpy_rgb_to_tensor(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)) for img in chunk_images], dim=0
+                )
+                chunk_batch = chunk_batch_cpu.to(DEVICE, non_blocking=True)
+                with torch.autocast(
+                    device_type="cuda", dtype=torch.float16, enabled=use_amp
+                ):
+                    result = MODEL.calibrate(
+                        chunk_batch, camera_model="pinhole", shared_intrinsics=True
+                    )
 
-    rp_deg = torch.rad2deg(result["gravity"].rp.detach().cpu()).numpy().astype(np.float32)
-    predicted_rolls = rp_deg[:, 0]
-    predicted_pitches = rp_deg[:, 1]
+                rp_deg = torch.rad2deg(result["gravity"].rp.detach().cpu()).numpy().astype(np.float32)
+                predicted_roll_chunks.append(rp_deg[:, 0])
+                predicted_pitch_chunks.append(rp_deg[:, 1])
+                roll_unc_chunks.append(
+                    np.maximum(_expand_or_fill(result.get("roll_uncertainty"), len(chunk_images), 3.0), 0.1)
+                )
+                pitch_unc_chunks.append(
+                    np.maximum(_expand_or_fill(result.get("pitch_uncertainty"), len(chunk_images), 3.0), 0.1)
+                )
 
-    # Clamp to avoid exploding weights on overconfident outliers.
-    roll_unc_deg = np.maximum(_expand_or_fill(result.get("roll_uncertainty"), len(sample_bgr_images), 3.0), 0.1)
-    pitch_unc_deg = np.maximum(
-        _expand_or_fill(result.get("pitch_uncertainty"), len(sample_bgr_images), 3.0), 0.1
-    )
+                del result, chunk_batch, chunk_batch_cpu
 
+    predicted_rolls = np.concatenate(predicted_roll_chunks, axis=0)
+    predicted_pitches = np.concatenate(predicted_pitch_chunks, axis=0)
+    roll_unc_deg = np.concatenate(roll_unc_chunks, axis=0)
+    pitch_unc_deg = np.concatenate(pitch_unc_chunks, axis=0)
     return predicted_rolls, predicted_pitches, roll_unc_deg, pitch_unc_deg
 
 
