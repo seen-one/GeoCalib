@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 
 <head>
@@ -182,9 +182,31 @@
             padding: 10px;
         }
 
-        #rollCanvas {
+        .diag-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 10px;
+        }
+
+        .diag-panel {
+            border: 1px solid #edf0f4;
+            border-radius: 10px;
+            padding: 8px;
+            background: #fbfcfd;
+        }
+
+        .diag-title {
+            font-size: 0.78rem;
+            font-weight: 700;
+            letter-spacing: 0.4px;
+            color: #4f5b68;
+            margin-bottom: 6px;
+            text-transform: uppercase;
+        }
+
+        .diag-canvas {
             width: 100%;
-            height: 220px;
+            height: 180px;
             display: block;
             border-radius: 8px;
             background: #fbfcfd;
@@ -208,8 +230,8 @@
                 font-size: 1.35rem;
             }
 
-            #rollCanvas {
-                height: 190px;
+            .diag-canvas {
+                height: 160px;
             }
         }
     </style>
@@ -264,7 +286,7 @@
 
                     <div id="loading" class="text-center mt-4" style="display:none;">
                         <div class="spinner-border" style="color: var(--accent);" role="status"></div>
-                        <p class="status-line mt-2 mb-0">Extracting views, predicting roll angles, searching best hypothesis...</p>
+                        <p class="status-line mt-2 mb-0">Extracting views, predicting roll/pitch, searching best hypothesis...</p>
                     </div>
                 </div>
 
@@ -274,29 +296,42 @@
                             <div class="chart-box h-100">
                                 <div class="d-flex justify-content-between align-items-center mb-2">
                                     <div>
-                                        <div class="label">Roll Curve Diagnostics</div>
-                                        <div class="status-line">Blue: predicted per sampled image, orange: fitted model</div>
+                                        <div class="label">Diagnostics</div>
+                                        <div class="status-line">Blue: GeoCalib prediction, orange: fitted model, red: weighted residual</div>
                                     </div>
                                     <button id="reopenBtn" class="btn btn-sm btn-outline-primary">
                                         <i class="fas fa-external-link-alt"></i> Open 3D Viewer
                                     </button>
                                 </div>
-                                <canvas id="rollCanvas" width="900" height="220"></canvas>
+                                <div class="diag-grid">
+                                    <div class="diag-panel">
+                                        <div class="diag-title">Roll Curve</div>
+                                        <canvas class="diag-canvas" id="rollCanvas" width="900" height="180"></canvas>
+                                    </div>
+                                    <div class="diag-panel">
+                                        <div class="diag-title">Pitch Curve</div>
+                                        <canvas class="diag-canvas" id="pitchCanvas" width="900" height="180"></canvas>
+                                    </div>
+                                    <div class="diag-panel">
+                                        <div class="diag-title">Weighted Residual</div>
+                                        <canvas class="diag-canvas" id="weightedCanvas" width="900" height="180"></canvas>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                         <div class="col-lg-3 mb-3">
                             <div class="row">
                                 <div class="col-6 col-lg-12 mb-2">
                                     <div class="metric-card">
-                                        <div class="label">Yaw α</div>
-                                        <div id="alphaVal" class="metric-value">0.00°</div>
+                                        <div class="label">Yaw &alpha;</div>
+                                        <div id="alphaVal" class="metric-value">0.00&deg;</div>
                                         <div class="metric-sub">Peak tilt direction</div>
                                     </div>
                                 </div>
                                 <div class="col-6 col-lg-12 mb-2">
                                     <div class="metric-card">
-                                        <div class="label">Roll β</div>
-                                        <div id="betaVal" class="metric-value">0.00°</div>
+                                        <div class="label">Roll &beta;</div>
+                                        <div id="betaVal" class="metric-value">0.00&deg;</div>
                                         <div class="metric-sub">Camera roll magnitude</div>
                                     </div>
                                 </div>
@@ -310,8 +345,8 @@
                                 <div class="col-6 col-lg-12 mb-2">
                                     <div class="metric-card">
                                         <div class="label">RMSE (inliers)</div>
-                                        <div id="rmseVal" class="metric-value">0.00°</div>
-                                        <div id="rollPitchVal" class="metric-sub">Viewer: R=0.00°, P=0.00°</div>
+                                        <div id="rmseVal" class="metric-value">0.00&deg;</div>
+                                        <div id="rollPitchVal" class="metric-sub">Viewer: R=0.00&deg;, P=0.00&deg;</div>
                                     </div>
                                 </div>
                             </div>
@@ -392,16 +427,18 @@
         });
 
         function renderResults(data) {
-            document.getElementById('alphaVal').textContent = `${data.alpha_deg.toFixed(2)}°`;
-            document.getElementById('betaVal').textContent = `${data.beta_deg.toFixed(2)}°`;
+            document.getElementById('alphaVal').textContent = `${data.alpha_deg.toFixed(2)}\u00B0`;
+            document.getElementById('betaVal').textContent = `${data.beta_deg.toFixed(2)}\u00B0`;
             document.getElementById('inlierVal').textContent = `${data.inlier_count}/${data.sample_count}`;
             document.getElementById('ratioVal').textContent = `${(data.inlier_ratio * 100).toFixed(1)}% inlier ratio`;
-            document.getElementById('rmseVal').textContent = `${data.rmse_inlier_deg.toFixed(2)}°`;
-            document.getElementById('rollPitchVal').textContent = `Viewer: R=${data.roll.toFixed(2)}°, P=${data.pitch.toFixed(2)}°`;
-            document.getElementById('metaLine').textContent = `${data.sample_count} samples, FOV ${data.fov_deg.toFixed(0)}°, inlier threshold ${data.inlier_threshold_deg.toFixed(1)}°`;
+            document.getElementById('rmseVal').textContent = `${data.rmse_inlier_deg.toFixed(2)}\u00B0`;
+            document.getElementById('rollPitchVal').textContent = `Viewer: R=${data.roll.toFixed(2)}\u00B0, P=${data.pitch.toFixed(2)}\u00B0`;
+            document.getElementById('metaLine').textContent = `${data.sample_count} samples, FOV ${data.fov_deg.toFixed(0)}\u00B0, inlier threshold ${data.inlier_threshold_deg.toFixed(1)}\u00B0`;
 
             renderGrid(data.samples);
-            drawCurve(data.samples);
+            drawAngleCurve(data.samples, 'rollCanvas', 'predicted_roll_deg', 'modeled_roll_deg');
+            drawAngleCurve(data.samples, 'pitchCanvas', 'predicted_pitch_deg', 'modeled_pitch_deg');
+            drawWeightedCurve(data.samples);
         }
 
         function renderGrid(samples) {
@@ -414,10 +451,10 @@
                 cell.innerHTML = `
                     <img class="view-thumb" src="/mem_image/${s.image_id}" alt="sample ${s.index}">
                     <div class="view-meta">
-                        <div><strong>#${s.index + 1}</strong> at ${s.yaw_deg.toFixed(1)}°</div>
-                        <div>pred: ${s.predicted_roll_deg.toFixed(2)}°</div>
-                        <div>fit: ${s.modeled_roll_deg.toFixed(2)}°</div>
-                        <div>err: ${s.error_deg.toFixed(2)}°</div>
+                        <div><strong>#${s.index + 1}</strong> at ${s.yaw_deg.toFixed(1)}\u00B0</div>
+                        <div>R pred/fit: ${s.predicted_roll_deg.toFixed(2)}\u00B0 / ${s.modeled_roll_deg.toFixed(2)}\u00B0</div>
+                        <div>P pred/fit: ${s.predicted_pitch_deg.toFixed(2)}\u00B0 / ${s.modeled_pitch_deg.toFixed(2)}\u00B0</div>
+                        <div>err: ${s.error_deg.toFixed(2)}\u00B0 | w: ${s.weighted_error.toFixed(2)}</div>
                         <span class="view-flag ${s.inlier ? 'inlier' : 'outlier'}">${s.inlier ? 'INLIER' : 'OUTLIER'}</span>
                     </div>
                 `;
@@ -425,8 +462,8 @@
             });
         }
 
-        function drawCurve(samples) {
-            const canvas = document.getElementById('rollCanvas');
+        function drawAngleCurve(samples, canvasId, predictedKey, modeledKey) {
+            const canvas = document.getElementById(canvasId);
             const ctx = canvas.getContext('2d');
             const W = canvas.width;
             const H = canvas.height;
@@ -436,13 +473,13 @@
             const pW = W - margin.left - margin.right;
             const pH = H - margin.top - margin.bottom;
 
-            const ys = samples.flatMap((s) => [s.predicted_roll_deg, s.modeled_roll_deg]);
+            const ys = samples.flatMap((s) => [s[predictedKey], s[modeledKey]]);
             const maxAbs = Math.max(8, ...ys.map((v) => Math.abs(v))) + 2;
             const yMin = -maxAbs;
             const yMax = maxAbs;
 
             const xScale = (x) => margin.left + (x / (samples.length - 1 || 1)) * pW;
-            const yScale = (y) => margin.top + (1 - (y - yMin) / (yMax - yMin)) * pH;
+            const yScale = (y) => margin.top + (1 - (y - yMin) / (yMax - yMin || 1)) * pH;
 
             ctx.strokeStyle = '#d6dbe3';
             ctx.lineWidth = 1;
@@ -465,7 +502,7 @@
             ctx.strokeStyle = '#d15a2d';
             samples.forEach((s, idx) => {
                 const x = xScale(idx);
-                const y = yScale(s.modeled_roll_deg);
+                const y = yScale(s[modeledKey]);
                 if (idx === 0) ctx.moveTo(x, y);
                 else ctx.lineTo(x, y);
             });
@@ -476,7 +513,7 @@
             ctx.strokeStyle = '#15616d';
             samples.forEach((s, idx) => {
                 const x = xScale(idx);
-                const y = yScale(s.predicted_roll_deg);
+                const y = yScale(s[predictedKey]);
                 if (idx === 0) ctx.moveTo(x, y);
                 else ctx.lineTo(x, y);
             });
@@ -484,7 +521,61 @@
 
             samples.forEach((s, idx) => {
                 const x = xScale(idx);
-                const y = yScale(s.predicted_roll_deg);
+                const y = yScale(s[predictedKey]);
+                ctx.beginPath();
+                ctx.arc(x, y, 2.4, 0, Math.PI * 2);
+                ctx.fillStyle = s.inlier ? '#1c8a5f' : '#c2401f';
+                ctx.fill();
+            });
+        }
+
+        function drawWeightedCurve(samples) {
+            const canvas = document.getElementById('weightedCanvas');
+            const ctx = canvas.getContext('2d');
+            const W = canvas.width;
+            const H = canvas.height;
+            ctx.clearRect(0, 0, W, H);
+
+            const margin = { left: 42, right: 14, top: 12, bottom: 28 };
+            const pW = W - margin.left - margin.right;
+            const pH = H - margin.top - margin.bottom;
+
+            const ys = samples.map((s) => s.weighted_error);
+            const yMax = Math.max(1.5, ...ys) * 1.1;
+            const yMin = 0;
+
+            const xScale = (x) => margin.left + (x / (samples.length - 1 || 1)) * pW;
+            const yScale = (y) => margin.top + (1 - (y - yMin) / (yMax - yMin || 1)) * pH;
+
+            ctx.strokeStyle = '#d6dbe3';
+            ctx.lineWidth = 1;
+            for (let i = 0; i <= 4; i++) {
+                const y = margin.top + (i / 4) * pH;
+                ctx.beginPath();
+                ctx.moveTo(margin.left, y);
+                ctx.lineTo(margin.left + pW, y);
+                ctx.stroke();
+            }
+
+            ctx.fillStyle = '#6a7482';
+            ctx.font = '11px sans-serif';
+            ctx.fillText(`${yMax.toFixed(1)}`, 7, yScale(yMax) + 4);
+            ctx.fillText('0', 14, yScale(0) + 4);
+
+            ctx.beginPath();
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#c2401f';
+            samples.forEach((s, idx) => {
+                const x = xScale(idx);
+                const y = yScale(s.weighted_error);
+                if (idx === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            });
+            ctx.stroke();
+
+            samples.forEach((s, idx) => {
+                const x = xScale(idx);
+                const y = yScale(s.weighted_error);
                 ctx.beginPath();
                 ctx.arc(x, y, 2.4, 0, Math.PI * 2);
                 ctx.fillStyle = s.inlier ? '#1c8a5f' : '#c2401f';
@@ -531,3 +622,5 @@
 </body>
 
 </html>
+
+

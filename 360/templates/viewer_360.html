@@ -1,8 +1,8 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 
 <head>
-    <title>360° Orientation Viewer</title>
+    <title>360&deg; Orientation Viewer</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
     <!-- Using r160 for modern features -->
@@ -147,17 +147,17 @@
         <div class="stats">
             <div class="stat-item">
                 <span class="stat-label">Pitch:</span>
-                <span class="stat-value" id="p-val">0.00°</span>
+                <span class="stat-value" id="p-val">0.00&deg;</span>
             </div>
             <div class="stat-item">
                 <span class="stat-label">Roll:</span>
-                <span class="stat-value" id="r-val">0.00°</span>
+                <span class="stat-value" id="r-val">0.00&deg;</span>
             </div>
         </div>
     </div>
 
     <div class="help-text">
-        Drag to Orbit • Scroll to Zoom
+        Drag to Orbit &bull; Scroll to Zoom
     </div>
 
     <div id="container"></div>
@@ -168,8 +168,8 @@
         const pitch = parseFloat(urlParams.get('pitch') || 0);
         const roll = parseFloat(urlParams.get('roll') || 0);
 
-        document.getElementById('p-val').textContent = pitch.toFixed(2) + '°';
-        document.getElementById('r-val').textContent = roll.toFixed(2) + '°';
+        document.getElementById('p-val').textContent = pitch.toFixed(2) + '\u00B0';
+        document.getElementById('r-val').textContent = roll.toFixed(2) + '\u00B0';
 
         let camera, scene, renderer, sphere, correctionGroup;
         let isUserInteracting = false, lon = 0, lat = 0, phi = 0, theta = 0;
