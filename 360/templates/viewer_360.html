@@ -168,6 +168,51 @@
             opacity: 0.65;
             cursor: wait;
         }
+
+        .review-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .action-btn {
+            border: 0;
+            border-radius: 8px;
+            padding: 8px 10px;
+            font-weight: 700;
+            font-size: 0.82rem;
+            color: #fff;
+            cursor: pointer;
+            flex: 1 1 auto;
+        }
+
+        .pass-btn {
+            background: #1f8f5f;
+        }
+
+        .pass-btn:hover:not(:disabled) {
+            background: #26a36c;
+        }
+
+        .fail-btn {
+            background: #b33b2b;
+        }
+
+        .fail-btn:hover:not(:disabled) {
+            background: #cc4734;
+        }
+
+        .action-btn:disabled {
+            opacity: 0.65;
+            cursor: wait;
+        }
+
+        .review-stats {
+            margin-top: 8px;
+            font-size: 0.78rem;
+            color: #b9b9b9;
+            letter-spacing: 0.2px;
+        }
     </style>
 </head>
 
@@ -194,6 +239,11 @@
         </div>
 
         <button id="nextSampleBtn" class="next-btn" type="button">Next Random Sample</button>
+        <div class="review-actions">
+            <button id="passBtn" class="action-btn pass-btn" type="button">Pass + Next</button>
+            <button id="failBtn" class="action-btn fail-btn" type="button">Fail + Next</button>
+        </div>
+        <div id="reviewStats" class="review-stats">Pass: 0 (0.0%) | Fail: 0 (0.0%) | Total: 0</div>
         <a id="panoramaxLink" class="source-link" href="#" target="_blank" rel="noopener noreferrer" style="display:none;">View on Panoramax</a>
     </div>
 
@@ -216,6 +266,9 @@
         let currentPanoramaxPic = (urlParams.get('panoramax_pic') || '').trim().toLowerCase();
         let nextSamplePromise = null;
         let cachedNextSample = null;
+        let passCount = 0;
+        let failCount = 0;
+        let isAdvancing = false;
 
         let camera, scene, renderer, sphere, correctionGroup, textureLoader;
         let isUserInteracting = false, lon = 0, lat = 0, phi = 0, theta = 0;
@@ -441,16 +494,33 @@
             return sample;
         }
 
-        document.getElementById('toggleCorrection').addEventListener('change', function () {
-            applyCorrection();
-        });
+        function updateReviewStats() {
+            const total = passCount + failCount;
+            const passPct = total > 0 ? (passCount / total) * 100 : 0;
+            const failPct = total > 0 ? (failCount / total) * 100 : 0;
+            document.getElementById('reviewStats').textContent =
+                `Pass: ${passCount} (${passPct.toFixed(1)}%) | Fail: ${failCount} (${failPct.toFixed(1)}%) | Total: ${total}`;
+        }
 
-        document.getElementById('nextSampleBtn').addEventListener('click', async function () {
-            const btn = this;
-            const originalLabel = btn.textContent;
-            btn.disabled = true;
-            btn.textContent = 'Loading Next...';
+        function setAdvanceLoadingState(isLoading, label) {
+            document.getElementById('nextSampleBtn').disabled = isLoading;
+            document.getElementById('passBtn').disabled = isLoading;
+            document.getElementById('failBtn').disabled = isLoading;
+            document.getElementById('nextSampleBtn').textContent = isLoading ? (label || 'Loading Next...') : 'Next Random Sample';
+        }
+
+        async function goToNextSample(decision) {
+            if (isAdvancing) return;
+            isAdvancing = true;
+            setAdvanceLoadingState(true, 'Loading Next...');
             try {
+                if (decision === 'pass') {
+                    passCount += 1;
+                    updateReviewStats();
+                } else if (decision === 'fail') {
+                    failCount += 1;
+                    updateReviewStats();
+                }
                 const sample = await consumeNextSample();
                 await applySample(sample);
                 queueNextSamplePreload();
@@ -459,11 +529,28 @@
                 alert(err.message || 'Failed to load the next random sample');
                 queueNextSamplePreload();
             } finally {
-                btn.disabled = false;
-                btn.textContent = originalLabel;
+                setAdvanceLoadingState(false);
+                isAdvancing = false;
             }
+        }
+
+        document.getElementById('toggleCorrection').addEventListener('change', function () {
+            applyCorrection();
         });
 
+        document.getElementById('nextSampleBtn').addEventListener('click', async function () {
+            await goToNextSample(null);
+        });
+
+        document.getElementById('passBtn').addEventListener('click', async function () {
+            await goToNextSample('pass');
+        });
+
+        document.getElementById('failBtn').addEventListener('click', async function () {
+            await goToNextSample('fail');
+        });
+
+        updateReviewStats();
         document.getElementById('toggleCorrection').dispatchEvent(new Event('change'));
     </script>
 </body>
