@@ -126,45 +126,34 @@ def _expand_or_fill(tensor, size, fill_value):
     return np.full(size, fill_value, dtype=np.float32)
 
 
-def estimate_rp_batch(sample_bgr_images, chunk_size=16):
+def estimate_rp_batch(sample_bgr_images):
     predicted_roll_chunks = []
     predicted_pitch_chunks = []
     roll_unc_chunks = []
     pitch_unc_chunks = []
-    use_amp = DEVICE.type == "cuda"
 
     # Guard model inference for concurrent Flask requests.
     with MODEL_LOCK:
         with torch.no_grad():
-            for start in range(0, len(sample_bgr_images), chunk_size):
-                chunk_images = sample_bgr_images[start : start + chunk_size]
-                chunk_batch_cpu = torch.stack(
-                    [numpy_rgb_to_tensor(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)) for img in chunk_images], dim=0
+            for sample_bgr in sample_bgr_images:
+                sample_tensor = numpy_rgb_to_tensor(cv2.cvtColor(sample_bgr, cv2.COLOR_BGR2RGB))
+                sample_tensor = sample_tensor.to(DEVICE, non_blocking=True)
+                result = MODEL.calibrate(
+                    sample_tensor, camera_model="pinhole", shared_intrinsics=False
                 )
-                chunk_batch = chunk_batch_cpu.to(DEVICE, non_blocking=True)
-                with torch.autocast(
-                    device_type="cuda", dtype=torch.float16, enabled=use_amp
-                ):
-                    result = MODEL.calibrate(
-                        chunk_batch, camera_model="pinhole", shared_intrinsics=True
-                    )
 
                 rp_deg = torch.rad2deg(result["gravity"].rp.detach().cpu()).numpy().astype(np.float32)
                 rp_deg = np.nan_to_num(rp_deg, nan=0.0, posinf=89.9, neginf=-89.9)
                 predicted_roll_chunks.append(rp_deg[:, 0])
                 predicted_pitch_chunks.append(rp_deg[:, 1])
-                roll_unc = _expand_or_fill(result.get("roll_uncertainty"), len(chunk_images), 3.0)
+                roll_unc = _expand_or_fill(result.get("roll_uncertainty"), 1, 3.0)
                 roll_unc = np.nan_to_num(roll_unc, nan=3.0, posinf=30.0, neginf=3.0)
-                pitch_unc = _expand_or_fill(result.get("pitch_uncertainty"), len(chunk_images), 3.0)
+                pitch_unc = _expand_or_fill(result.get("pitch_uncertainty"), 1, 3.0)
                 pitch_unc = np.nan_to_num(pitch_unc, nan=3.0, posinf=30.0, neginf=3.0)
-                roll_unc_chunks.append(
-                    np.maximum(roll_unc, 0.1)
-                )
-                pitch_unc_chunks.append(
-                    np.maximum(pitch_unc, 0.1)
-                )
+                roll_unc_chunks.append(np.maximum(roll_unc, 0.1))
+                pitch_unc_chunks.append(np.maximum(pitch_unc, 0.1))
 
-                del result, chunk_batch, chunk_batch_cpu
+                del result, sample_tensor
 
     predicted_rolls = np.concatenate(predicted_roll_chunks, axis=0)
     predicted_pitches = np.concatenate(predicted_pitch_chunks, axis=0)
