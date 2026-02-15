@@ -36,6 +36,7 @@ MODEL.eval()
 MODEL_LOCK = Lock()
 PANORAMAX_IDS_PATH = Path(__file__).resolve().parent / "random_panoramax_bike_ids.txt"
 MAX_SAMPLE_COUNT = 144
+INFERENCE_MICROBATCH_SIZE = 16
 
 
 def _get_geocalib_view_hw(model):
@@ -127,6 +128,12 @@ def _expand_or_fill(tensor, size, fill_value):
 
 
 def estimate_rp_batch(sample_bgr_images):
+    sample_tensors = [
+        numpy_rgb_to_tensor(cv2.cvtColor(sample_bgr, cv2.COLOR_BGR2RGB)) for sample_bgr in sample_bgr_images
+    ]
+    sample_batch = torch.stack(sample_tensors, dim=0).to(DEVICE, non_blocking=True)
+    sample_count = sample_batch.shape[0]
+
     predicted_roll_chunks = []
     predicted_pitch_chunks = []
     roll_unc_chunks = []
@@ -135,25 +142,25 @@ def estimate_rp_batch(sample_bgr_images):
     # Guard model inference for concurrent Flask requests.
     with MODEL_LOCK:
         with torch.no_grad():
-            for sample_bgr in sample_bgr_images:
-                sample_tensor = numpy_rgb_to_tensor(cv2.cvtColor(sample_bgr, cv2.COLOR_BGR2RGB))
-                sample_tensor = sample_tensor.to(DEVICE, non_blocking=True)
+            for start in range(0, sample_count, INFERENCE_MICROBATCH_SIZE):
+                end = min(start + INFERENCE_MICROBATCH_SIZE, sample_count)
+                micro_batch = sample_batch[start:end]
                 result = MODEL.calibrate(
-                    sample_tensor, camera_model="pinhole", shared_intrinsics=False
+                    micro_batch, camera_model="pinhole", shared_intrinsics=True
                 )
 
                 rp_deg = torch.rad2deg(result["gravity"].rp.detach().cpu()).numpy().astype(np.float32)
                 rp_deg = np.nan_to_num(rp_deg, nan=0.0, posinf=89.9, neginf=-89.9)
                 predicted_roll_chunks.append(rp_deg[:, 0])
                 predicted_pitch_chunks.append(rp_deg[:, 1])
-                roll_unc = _expand_or_fill(result.get("roll_uncertainty"), 1, 3.0)
+                roll_unc = _expand_or_fill(result.get("roll_uncertainty"), end - start, 3.0)
                 roll_unc = np.nan_to_num(roll_unc, nan=3.0, posinf=30.0, neginf=3.0)
-                pitch_unc = _expand_or_fill(result.get("pitch_uncertainty"), 1, 3.0)
+                pitch_unc = _expand_or_fill(result.get("pitch_uncertainty"), end - start, 3.0)
                 pitch_unc = np.nan_to_num(pitch_unc, nan=3.0, posinf=30.0, neginf=3.0)
                 roll_unc_chunks.append(np.maximum(roll_unc, 0.1))
                 pitch_unc_chunks.append(np.maximum(pitch_unc, 0.1))
 
-                del result, sample_tensor
+                del result, micro_batch
 
     predicted_rolls = np.concatenate(predicted_roll_chunks, axis=0)
     predicted_pitches = np.concatenate(predicted_pitch_chunks, axis=0)
