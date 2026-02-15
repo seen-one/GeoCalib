@@ -169,6 +169,15 @@
             cursor: wait;
         }
 
+        .back-btn {
+            margin-top: 10px;
+            background: #1f2b36;
+        }
+
+        .back-btn:hover {
+            background: #2d3f4f;
+        }
+
         .review-actions {
             display: flex;
             gap: 8px;
@@ -227,7 +236,7 @@
             <div class="toggle-switch"></div>
         </label>
         <label class="toggle-container">
-            <span style="font-weight: 600;">Preloading Next Random</span>
+            <span style="font-weight: 600;">Preload Next Random</span>
             <input type="checkbox" id="togglePreloading">
             <div class="toggle-switch"></div>
         </label>
@@ -243,6 +252,7 @@
             </div>
         </div>
 
+        <button id="backToStartBtn" class="next-btn back-btn" type="button">Back to Start Page</button>
         <button id="nextSampleBtn" class="next-btn" type="button">Next Random Sample</button>
         <div class="review-actions">
             <button id="passBtn" class="action-btn pass-btn" type="button">Pass + Next</button>
@@ -556,6 +566,10 @@
             } else {
                 queueNextSamplePreload();
             }
+        });
+
+        document.getElementById('backToStartBtn').addEventListener('click', function () {
+            window.location.href = '/predict_360';
         });
 
         document.getElementById('nextSampleBtn').addEventListener('click', async function () {
