@@ -38,6 +38,19 @@ PANORAMAX_IDS_PATH = Path(__file__).resolve().parent / "random_panoramax_bike_id
 MAX_SAMPLE_COUNT = 144
 
 
+def _get_geocalib_view_hw(model):
+    resize = getattr(model.image_processor.conf, "resize", 320)
+    if isinstance(resize, int):
+        return (int(resize), int(resize))
+    if isinstance(resize, (tuple, list)) and len(resize) == 2:
+        return (int(resize[0]), int(resize[1]))
+    logger.warning("Unexpected GeoCalib resize config %s. Falling back to 320x320.", resize)
+    return (320, 320)
+
+
+GEOCALIB_VIEW_HW = _get_geocalib_view_hw(MODEL)
+
+
 class ImageCache:
     def __init__(self, max_size=50):
         self.cache = OrderedDict()
@@ -235,7 +248,7 @@ def api_predict_360():
                 u_deg=float(yaw_deg),
                 v_deg=0.0,
                 in_rot_deg=0.0,
-                out_hw=(400, 400),
+                out_hw=GEOCALIB_VIEW_HW,
                 mode="bilinear",
             )
             return idx, sample_img
@@ -260,6 +273,9 @@ def api_predict_360():
         def angular_diff_deg(a_deg, b_deg):
             return abs((a_deg - b_deg + 180.0) % 360.0 - 180.0)
 
+        def angular_diff_deg_vec(a_deg, b_deg):
+            return np.abs((a_deg - b_deg + 180.0) % 360.0 - 180.0).astype(np.float32)
+
         def model_roll_deg(alpha_rad, beta_rad, yaw_rad_values):
             return np.rad2deg(np.arctan(np.tan(beta_rad) * np.cos(yaw_rad_values - alpha_rad)))
 
@@ -269,14 +285,8 @@ def api_predict_360():
         def evaluate_hypothesis(alpha_rad, beta_rad):
             modeled_rolls = model_roll_deg(alpha_rad, beta_rad, yaw_rads)
             modeled_pitches = model_pitch_deg(alpha_rad, beta_rad, yaw_rads)
-            roll_errors = np.array(
-                [angular_diff_deg(float(p), float(m)) for p, m in zip(predicted_rolls, modeled_rolls)],
-                dtype=np.float32,
-            )
-            pitch_errors = np.array(
-                [angular_diff_deg(float(p), float(m)) for p, m in zip(predicted_pitches, modeled_pitches)],
-                dtype=np.float32,
-            )
+            roll_errors = angular_diff_deg_vec(predicted_rolls, modeled_rolls)
+            pitch_errors = angular_diff_deg_vec(predicted_pitches, modeled_pitches)
             combined_errors = np.sqrt((roll_errors**2 + pitch_errors**2) / 2.0)
             weighted_sq_errors = 0.5 * (
                 (roll_errors / roll_unc_deg) ** 2 + (pitch_errors / pitch_unc_deg) ** 2
@@ -360,20 +370,8 @@ def api_predict_360():
             def objective(alpha_rad, beta_rad):
                 modeled_rolls = model_roll_deg(alpha_rad, beta_rad, yaw_rads[inlier_indices])
                 modeled_pitches = model_pitch_deg(alpha_rad, beta_rad, yaw_rads[inlier_indices])
-                roll_errors = np.array(
-                    [
-                        angular_diff_deg(float(predicted_rolls[idx]), float(modeled_rolls[k]))
-                        for k, idx in enumerate(inlier_indices)
-                    ],
-                    dtype=np.float32,
-                )
-                pitch_errors = np.array(
-                    [
-                        angular_diff_deg(float(predicted_pitches[idx]), float(modeled_pitches[k]))
-                        for k, idx in enumerate(inlier_indices)
-                    ],
-                    dtype=np.float32,
-                )
+                roll_errors = angular_diff_deg_vec(predicted_rolls[inlier_indices], modeled_rolls)
+                pitch_errors = angular_diff_deg_vec(predicted_pitches[inlier_indices], modeled_pitches)
                 return float(
                     np.mean(
                         0.5
