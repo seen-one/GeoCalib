@@ -51,6 +51,11 @@ def _get_geocalib_view_hw(model):
 GEOCALIB_VIEW_HW = _get_geocalib_view_hw(MODEL)
 
 
+def _finite_float_or_none(value):
+    value = float(value)
+    return value if np.isfinite(value) else None
+
+
 class ImageCache:
     def __init__(self, max_size=50):
         self.cache = OrderedDict()
@@ -145,13 +150,18 @@ def estimate_rp_batch(sample_bgr_images, chunk_size=16):
                     )
 
                 rp_deg = torch.rad2deg(result["gravity"].rp.detach().cpu()).numpy().astype(np.float32)
+                rp_deg = np.nan_to_num(rp_deg, nan=0.0, posinf=89.9, neginf=-89.9)
                 predicted_roll_chunks.append(rp_deg[:, 0])
                 predicted_pitch_chunks.append(rp_deg[:, 1])
+                roll_unc = _expand_or_fill(result.get("roll_uncertainty"), len(chunk_images), 3.0)
+                roll_unc = np.nan_to_num(roll_unc, nan=3.0, posinf=30.0, neginf=3.0)
+                pitch_unc = _expand_or_fill(result.get("pitch_uncertainty"), len(chunk_images), 3.0)
+                pitch_unc = np.nan_to_num(pitch_unc, nan=3.0, posinf=30.0, neginf=3.0)
                 roll_unc_chunks.append(
-                    np.maximum(_expand_or_fill(result.get("roll_uncertainty"), len(chunk_images), 3.0), 0.1)
+                    np.maximum(roll_unc, 0.1)
                 )
                 pitch_unc_chunks.append(
-                    np.maximum(_expand_or_fill(result.get("pitch_uncertainty"), len(chunk_images), 3.0), 0.1)
+                    np.maximum(pitch_unc, 0.1)
                 )
 
                 del result, chunk_batch, chunk_batch_cpu
@@ -160,6 +170,10 @@ def estimate_rp_batch(sample_bgr_images, chunk_size=16):
     predicted_pitches = np.concatenate(predicted_pitch_chunks, axis=0)
     roll_unc_deg = np.concatenate(roll_unc_chunks, axis=0)
     pitch_unc_deg = np.concatenate(pitch_unc_chunks, axis=0)
+    predicted_rolls = np.nan_to_num(predicted_rolls, nan=0.0, posinf=89.9, neginf=-89.9)
+    predicted_pitches = np.nan_to_num(predicted_pitches, nan=0.0, posinf=89.9, neginf=-89.9)
+    roll_unc_deg = np.maximum(np.nan_to_num(roll_unc_deg, nan=3.0, posinf=30.0, neginf=3.0), 0.1)
+    pitch_unc_deg = np.maximum(np.nan_to_num(pitch_unc_deg, nan=3.0, posinf=30.0, neginf=3.0), 0.1)
     return predicted_rolls, predicted_pitches, roll_unc_deg, pitch_unc_deg
 
 
@@ -283,14 +297,24 @@ def api_predict_360():
             return np.rad2deg(-np.arctan(np.tan(beta_rad) * np.sin(yaw_rad_values - alpha_rad)))
 
         def evaluate_hypothesis(alpha_rad, beta_rad):
-            modeled_rolls = model_roll_deg(alpha_rad, beta_rad, yaw_rads)
-            modeled_pitches = model_pitch_deg(alpha_rad, beta_rad, yaw_rads)
-            roll_errors = angular_diff_deg_vec(predicted_rolls, modeled_rolls)
-            pitch_errors = angular_diff_deg_vec(predicted_pitches, modeled_pitches)
-            combined_errors = np.sqrt((roll_errors**2 + pitch_errors**2) / 2.0)
+            modeled_rolls = model_roll_deg(alpha_rad, beta_rad, yaw_rads).astype(np.float32)
+            modeled_pitches = model_pitch_deg(alpha_rad, beta_rad, yaw_rads).astype(np.float32)
+            modeled_rolls = np.nan_to_num(modeled_rolls, nan=0.0, posinf=90.0, neginf=-90.0)
+            modeled_pitches = np.nan_to_num(modeled_pitches, nan=0.0, posinf=90.0, neginf=-90.0)
+            roll_errors = np.nan_to_num(
+                angular_diff_deg_vec(predicted_rolls, modeled_rolls), nan=180.0, posinf=180.0, neginf=180.0
+            )
+            pitch_errors = np.nan_to_num(
+                angular_diff_deg_vec(predicted_pitches, modeled_pitches), nan=180.0, posinf=180.0, neginf=180.0
+            )
+            combined_errors = np.sqrt((roll_errors**2 + pitch_errors**2) / 2.0).astype(np.float32)
+            combined_errors = np.nan_to_num(combined_errors, nan=180.0, posinf=180.0, neginf=180.0)
             weighted_sq_errors = 0.5 * (
                 (roll_errors / roll_unc_deg) ** 2 + (pitch_errors / pitch_unc_deg) ** 2
             )
+            weighted_sq_errors = np.nan_to_num(
+                weighted_sq_errors, nan=1e6, posinf=1e6, neginf=1e6
+            ).astype(np.float32)
             inliers = combined_errors <= inlier_threshold_deg
             inlier_count = int(np.sum(inliers))
             mae = float(np.mean(combined_errors[inliers])) if inlier_count > 0 else float("inf")
@@ -327,19 +351,29 @@ def api_predict_360():
                 aj = tan_rolls[j]
                 theta_i = yaw_rads[i]
                 theta_j = yaw_rads[j]
+                if not np.isfinite(ai) or not np.isfinite(aj):
+                    continue
 
                 p = ai * np.cos(theta_j) - aj * np.cos(theta_i)
                 q = ai * np.sin(theta_j) - aj * np.sin(theta_i)
+                if not np.isfinite(p) or not np.isfinite(q):
+                    continue
                 if abs(p) < tiny and abs(q) < tiny:
                     continue
 
                 alpha_candidate_1 = np.arctan2(-p, q)
                 for alpha_candidate in (alpha_candidate_1, alpha_candidate_1 + np.pi):
+                    if not np.isfinite(alpha_candidate):
+                        continue
                     cos_term = np.cos(theta_i - alpha_candidate)
                     if abs(cos_term) < tiny:
                         continue
                     tan_beta = ai / cos_term
+                    if not np.isfinite(tan_beta):
+                        continue
                     beta_candidate = np.arctan(tan_beta)
+                    if not np.isfinite(beta_candidate):
+                        continue
 
                     hypothesis = evaluate_hypothesis(alpha_candidate, beta_candidate)
                     if best is None:
@@ -370,13 +404,26 @@ def api_predict_360():
             def objective(alpha_rad, beta_rad):
                 modeled_rolls = model_roll_deg(alpha_rad, beta_rad, yaw_rads[inlier_indices])
                 modeled_pitches = model_pitch_deg(alpha_rad, beta_rad, yaw_rads[inlier_indices])
-                roll_errors = angular_diff_deg_vec(predicted_rolls[inlier_indices], modeled_rolls)
-                pitch_errors = angular_diff_deg_vec(predicted_pitches[inlier_indices], modeled_pitches)
-                return float(
-                    np.mean(
-                        0.5
-                        * ((roll_errors / inlier_roll_unc) ** 2 + (pitch_errors / inlier_pitch_unc) ** 2)
-                    )
+                roll_errors = np.nan_to_num(
+                    angular_diff_deg_vec(predicted_rolls[inlier_indices], modeled_rolls),
+                    nan=180.0,
+                    posinf=180.0,
+                    neginf=180.0,
+                )
+                pitch_errors = np.nan_to_num(
+                    angular_diff_deg_vec(predicted_pitches[inlier_indices], modeled_pitches),
+                    nan=180.0,
+                    posinf=180.0,
+                    neginf=180.0,
+                )
+                objective_value = np.mean(
+                    0.5
+                    * ((roll_errors / inlier_roll_unc) ** 2 + (pitch_errors / inlier_pitch_unc) ** 2)
+                )
+                return (
+                    float(objective_value)
+                    if np.isfinite(objective_value)
+                    else 1e6
                 )
 
             alpha_center = best["alpha_rad"]
@@ -429,15 +476,15 @@ def api_predict_360():
             sample_entries.append(
                 {
                     "index": idx,
-                    "yaw_deg": float(sample_yaws[idx]),
-                    "predicted_roll_deg": float(predicted_rolls[idx]),
-                    "modeled_roll_deg": float(modeled_rolls[idx]),
-                    "predicted_pitch_deg": float(predicted_pitches[idx]),
-                    "modeled_pitch_deg": float(modeled_pitches[idx]),
-                    "roll_error_deg": float(best["roll_errors"][idx]),
-                    "pitch_error_deg": float(best["pitch_errors"][idx]),
-                    "weighted_error": float(best["weighted_errors"][idx]),
-                    "error_deg": float(best["errors"][idx]),
+                    "yaw_deg": _finite_float_or_none(sample_yaws[idx]),
+                    "predicted_roll_deg": _finite_float_or_none(predicted_rolls[idx]),
+                    "modeled_roll_deg": _finite_float_or_none(modeled_rolls[idx]),
+                    "predicted_pitch_deg": _finite_float_or_none(predicted_pitches[idx]),
+                    "modeled_pitch_deg": _finite_float_or_none(modeled_pitches[idx]),
+                    "roll_error_deg": _finite_float_or_none(best["roll_errors"][idx]),
+                    "pitch_error_deg": _finite_float_or_none(best["pitch_errors"][idx]),
+                    "weighted_error": _finite_float_or_none(best["weighted_errors"][idx]),
+                    "error_deg": _finite_float_or_none(best["errors"][idx]),
                     "inlier": bool(best["inliers"][idx]),
                     "image_id": sample_image_id,
                 }
@@ -450,14 +497,14 @@ def api_predict_360():
                 "sample_count": sample_count,
                 "fov_deg": fov_deg,
                 "inlier_threshold_deg": inlier_threshold_deg,
-                "alpha_deg": alpha_deg,
-                "beta_deg": beta_deg,
-                "roll": roll_deg,
-                "pitch": pitch_deg,
+                "alpha_deg": _finite_float_or_none(alpha_deg),
+                "beta_deg": _finite_float_or_none(beta_deg),
+                "roll": _finite_float_or_none(roll_deg),
+                "pitch": _finite_float_or_none(pitch_deg),
                 "inlier_count": int(best["inlier_count"]),
-                "inlier_ratio": float(best["inlier_count"] / sample_count),
-                "mae_inlier_deg": float(best["mae"]),
-                "rmse_inlier_deg": float(best["rmse"]),
+                "inlier_ratio": _finite_float_or_none(best["inlier_count"] / sample_count),
+                "mae_inlier_deg": _finite_float_or_none(best["mae"]),
+                "rmse_inlier_deg": _finite_float_or_none(best["rmse"]),
                 "samples": sample_entries,
             }
         )
