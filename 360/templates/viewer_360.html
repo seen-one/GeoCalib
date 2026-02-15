@@ -227,8 +227,8 @@
             <div class="toggle-switch"></div>
         </label>
         <label class="toggle-container">
-            <span style="font-weight: 600;">Preloading</span>
-            <input type="checkbox" id="togglePreloading" checked>
+            <span style="font-weight: 600;">Preloading Next Random</span>
+            <input type="checkbox" id="togglePreloading">
             <div class="toggle-switch"></div>
         </label>
 
@@ -271,7 +271,7 @@
         let currentPanoramaxPic = (urlParams.get('panoramax_pic') || '').trim().toLowerCase();
         let nextSamplePromise = null;
         let cachedNextSample = null;
-        let preloadingEnabled = true;
+        let preloadingEnabled = false;
         let passCount = 0;
         let failCount = 0;
         let isAdvancing = false;
