@@ -37,6 +37,9 @@ MODEL_LOCK = Lock()
 PANORAMAX_IDS_PATH = Path(__file__).resolve().parent / "random_panoramax_bike_ids.txt"
 MAX_SAMPLE_COUNT = 144
 INFERENCE_MICROBATCH_SIZE = 16
+ALLOWED_CORS_ORIGINS = {
+    "https://leveltest.seen.one",
+}
 
 
 def _get_geocalib_view_hw(model):
@@ -225,9 +228,9 @@ def api_predict_360():
         return error_response("No selected file or valid URL")
 
     try:
-        fov_deg = float(request.form.get("fov", 60))
+        fov_deg = float(request.form.get("fov", 70))
         inlier_threshold_deg = float(request.form.get("inlier_threshold_deg", 2.0))
-        sample_count = int(request.form.get("sample_count", 36))
+        sample_count = int(request.form.get("sample_count", 18))
     except (TypeError, ValueError):
         return error_response("Invalid numeric request parameter")
 
@@ -510,11 +513,32 @@ def api_predict_360():
         return error_response(str(e), 500)
 
 
+def apply_cors_headers(response):
+    origin = request.headers.get("Origin")
+    if origin in ALLOWED_CORS_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        requested_headers = request.headers.get("Access-Control-Request-Headers")
+        response.headers["Access-Control-Allow-Headers"] = (
+            requested_headers if requested_headers else "Content-Type, Authorization"
+        )
+        response.headers["Access-Control-Max-Age"] = "86400"
+        response.headers.add("Vary", "Origin")
+    return response
+
+
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        return apply_cors_headers(app.make_default_options_response())
+    return None
+
+
 @app.after_request
 def add_header(response):
     response.headers["X-UA-Compatible"] = "IE=Edge,chrome=1"
     response.headers["Cache-Control"] = "public, max-age=0"
-    return response
+    return apply_cors_headers(response)
 
 
 if __name__ == "__main__":
